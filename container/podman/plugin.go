@@ -17,18 +17,18 @@ package podman
 import (
 	"fmt"
 
-	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/cedana/runc/libcontainer/cgroups"
 	"k8s.io/klog/v2"
 
-	"github.com/google/cadvisor/container"
-	"github.com/google/cadvisor/container/docker"
-	dockerutil "github.com/google/cadvisor/container/docker/utils"
-	"github.com/google/cadvisor/container/libcontainer"
-	"github.com/google/cadvisor/devicemapper"
-	"github.com/google/cadvisor/fs"
-	info "github.com/google/cadvisor/info/v1"
-	"github.com/google/cadvisor/watcher"
-	"github.com/google/cadvisor/zfs"
+	"github.com/cedana/cadvisor/container"
+	"github.com/cedana/cadvisor/container/docker"
+	dockerutil "github.com/cedana/cadvisor/container/docker/utils"
+	"github.com/cedana/cadvisor/container/libcontainer"
+	"github.com/cedana/cadvisor/devicemapper"
+	"github.com/cedana/cadvisor/fs"
+	info "github.com/cedana/cadvisor/info/v1"
+	"github.com/cedana/cadvisor/watcher"
+	"github.com/cedana/cadvisor/zfs"
 )
 
 func NewPlugin() container.Plugin {

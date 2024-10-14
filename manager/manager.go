@@ -16,9 +16,7 @@
 package manager
 
 import (
-	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"path"
 	"strconv"
@@ -27,36 +25,33 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/cadvisor/cache/memory"
-	"github.com/google/cadvisor/collector"
-	"github.com/google/cadvisor/container"
-	"github.com/google/cadvisor/container/raw"
-	"github.com/google/cadvisor/events"
-	"github.com/google/cadvisor/fs"
-	info "github.com/google/cadvisor/info/v1"
-	v2 "github.com/google/cadvisor/info/v2"
-	"github.com/google/cadvisor/machine"
-	"github.com/google/cadvisor/nvm"
-	"github.com/google/cadvisor/perf"
-	"github.com/google/cadvisor/resctrl"
-	"github.com/google/cadvisor/stats"
-	"github.com/google/cadvisor/utils/oomparser"
-	"github.com/google/cadvisor/utils/sysfs"
-	"github.com/google/cadvisor/version"
-	"github.com/google/cadvisor/watcher"
+	"github.com/cedana/cadvisor/cache/memory"
+	"github.com/cedana/cadvisor/container"
+	"github.com/cedana/cadvisor/container/raw"
+	"github.com/cedana/cadvisor/events"
+	"github.com/cedana/cadvisor/fs"
+	info "github.com/cedana/cadvisor/info/v1"
+	v2 "github.com/cedana/cadvisor/info/v2"
+	"github.com/cedana/cadvisor/machine"
+	"github.com/cedana/cadvisor/nvm"
+	"github.com/cedana/cadvisor/perf"
+	"github.com/cedana/cadvisor/utils/oomparser"
+	"github.com/cedana/cadvisor/utils/sysfs"
+	"github.com/cedana/cadvisor/version"
+	"github.com/cedana/cadvisor/watcher"
 
-	"github.com/opencontainers/runc/libcontainer/cgroups"
+	"github.com/cedana/runc/libcontainer/cgroups"
 
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 )
 
-var globalHousekeepingInterval = flag.Duration("global_housekeeping_interval", 1*time.Minute, "Interval between global housekeepings")
-var updateMachineInfoInterval = flag.Duration("update_machine_info_interval", 5*time.Minute, "Interval between machine info updates.")
-var logCadvisorUsage = flag.Bool("log_cadvisor_usage", false, "Whether to log the usage of the cAdvisor container")
-var eventStorageAgeLimit = flag.String("event_storage_age_limit", "default=24h", "Max length of time for which to store events (per type). Value is a comma separated list of key values, where the keys are event types (e.g.: creation, oom) or \"default\" and the value is a duration. Default is applied to all non-specified event types")
-var eventStorageEventLimit = flag.String("event_storage_event_limit", "default=100000", "Max number of events to store (per type). Value is a comma separated list of key values, where the keys are event types (e.g.: creation, oom) or \"default\" and the value is an integer. Default is applied to all non-specified event types")
-var applicationMetricsCountLimit = flag.Int("application_metrics_count_limit", 100, "Max number of application metrics to store (per container)")
+var globalHousekeepingInterval = 1 * time.Minute
+var updateMachineInfoInterval = 5 * time.Minute
+var logCadvisorUsage = false
+var eventStorageAgeLimit = "default=24h"
+var eventStorageEventLimit = "default=100000"
+var applicationMetricsCountLimit = 100
 
 // The namespace under which aliases are unique.
 const (
@@ -64,9 +59,12 @@ const (
 	PodmanNamespace = "podman"
 )
 
+var minute = 60 * time.Second
+var allowDynamic = true
+
 var HousekeepingConfigFlags = HousekeepingConfig{
-	flag.Duration("max_housekeeping_interval", 60*time.Second, "Largest interval to allow between container housekeepings"),
-	flag.Bool("allow_dynamic_housekeeping", true, "Whether to allow the housekeeping interval to be dynamic"),
+	&minute,
+	&allowDynamic,
 }
 
 // The Manager interface defines operations for starting a manager and getting
@@ -140,6 +138,12 @@ type Manager interface {
 	// Returns debugging information. Map of lines per category.
 	DebugInfo() map[string][]string
 
+	AllContainers(c *info.ContainerInfoRequest) (map[string]info.ContainerInfo, error)
+
+	AllContainerdContainers(c *info.ContainerInfoRequest) (map[string]info.ContainerInfo, error)
+
+	AllCrioContainers(c *info.ContainerInfoRequest) (map[string]info.ContainerInfo, error)
+
 	AllPodmanContainers(c *info.ContainerInfoRequest) (map[string]info.ContainerInfo, error)
 
 	PodmanContainer(containerName string, query *info.ContainerInfoRequest) (info.ContainerInfo, error)
@@ -152,7 +156,14 @@ type HousekeepingConfig = struct {
 }
 
 // New takes a memory storage and returns a new manager.
-func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, HousekeepingConfig HousekeepingConfig, includedMetricsSet container.MetricSet, collectorHTTPClient *http.Client, rawContainerCgroupPathPrefixWhiteList, containerEnvMetadataWhiteList []string, perfEventsFile string, resctrlInterval time.Duration) (Manager, error) {
+func New(
+	memoryCache *memory.InMemoryCache,
+	sysfs sysfs.SysFs,
+	HousekeepingConfig HousekeepingConfig,
+	includedMetricsSet container.MetricSet,
+	rawContainerCgroupPathPrefixWhiteList,
+	containerEnvMetadataWhiteList []string,
+) (*manager, error) {
 	if memoryCache == nil {
 		return nil, fmt.Errorf("manager requires memory storage")
 	}
@@ -204,7 +215,6 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, HousekeepingConfi
 		includedMetrics:                       includedMetricsSet,
 		containerWatchers:                     []watcher.ContainerWatcher{},
 		eventsChannel:                         eventsChannel,
-		collectorHTTPClient:                   collectorHTTPClient,
 		rawContainerCgroupPathPrefixWhiteList: rawContainerCgroupPathPrefixWhiteList,
 		containerEnvMetadataWhiteList:         containerEnvMetadataWhiteList,
 	}
@@ -215,16 +225,6 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, HousekeepingConfi
 	}
 	newManager.machineInfo = *machineInfo
 	klog.V(1).Infof("Machine: %+v", newManager.machineInfo)
-
-	newManager.perfManager, err = perf.NewManager(perfEventsFile, machineInfo.Topology)
-	if err != nil {
-		return nil, err
-	}
-
-	newManager.resctrlManager, err = resctrl.NewManager(resctrlInterval, resctrl.Setup, machineInfo.CPUVendorID, inHostNamespace)
-	if err != nil {
-		klog.V(4).Infof("Cannot gather resctrl metrics: %v", err)
-	}
 
 	versionInfo, err := getVersionInfo()
 	if err != nil {
@@ -263,9 +263,6 @@ type manager struct {
 	includedMetrics          container.MetricSet
 	containerWatchers        []watcher.ContainerWatcher
 	eventsChannel            chan watcher.ContainerEvent
-	collectorHTTPClient      *http.Client
-	perfManager              stats.Manager
-	resctrlManager           resctrl.Manager
 	// List of raw container cgroup path prefix whitelist.
 	rawContainerCgroupPathPrefixWhiteList []string
 	// List of container env prefix whitelist, the matched container envs would be collected into metrics as extra labels.
@@ -299,12 +296,6 @@ func (m *manager) Start() error {
 		return err
 	}
 	m.containerWatchers = append(m.containerWatchers, rawWatcher)
-
-	// Watch for OOMs.
-	err = m.watchForNewOoms()
-	if err != nil {
-		klog.Warningf("Could not configure a source for OOM detection, disabling OOM events: %v", err)
-	}
 
 	// If there are no factories, don't start any housekeeping and serve the information we do have.
 	if !container.HasFactories() {
@@ -370,7 +361,7 @@ func (m *manager) destroyCollectors() {
 }
 
 func (m *manager) updateMachineInfo(quit chan error) {
-	ticker := time.NewTicker(*updateMachineInfoInterval)
+	ticker := time.NewTicker(updateMachineInfoInterval)
 	for {
 		select {
 		case <-ticker.C:
@@ -394,11 +385,11 @@ func (m *manager) updateMachineInfo(quit chan error) {
 func (m *manager) globalHousekeeping(quit chan error) {
 	// Long housekeeping is either 100ms or half of the housekeeping interval.
 	longHousekeeping := 100 * time.Millisecond
-	if *globalHousekeepingInterval/2 < longHousekeeping {
-		longHousekeeping = *globalHousekeepingInterval / 2
+	if globalHousekeepingInterval/2 < longHousekeeping {
+		longHousekeeping = globalHousekeepingInterval / 2
 	}
 
-	ticker := time.NewTicker(*globalHousekeepingInterval)
+	ticker := time.NewTicker(globalHousekeepingInterval)
 	for {
 		select {
 		case t := <-ticker.C:
@@ -540,6 +531,19 @@ func (m *manager) GetContainerInfoV2(containerName string, options v2.RequestOpt
 	return infos, errs.OrNil()
 }
 
+func (m *manager) AllContainers(query *info.ContainerInfoRequest) (map[string]info.ContainerInfo, error) {
+	containers := make(map[string]*containerData, len(m.containers))
+	func() {
+		m.containersLock.RLock()
+		defer m.containersLock.RUnlock()
+		// Get containers in a namespace.
+		for _, cont := range m.containers {
+			containers[cont.info.Name] = cont
+		}
+	}()
+	return m.containersInfo(containers, query)
+}
+
 func (m *manager) containerDataToContainerInfo(cont *containerData, query *info.ContainerInfoRequest) (*info.ContainerInfo, error) {
 	// Get the info from the container.
 	cinfo, err := cont.GetInfo(true)
@@ -617,6 +621,16 @@ func (m *manager) getAllNamespacedContainers(ns string) map[string]*containerDat
 
 func (m *manager) AllDockerContainers(query *info.ContainerInfoRequest) (map[string]info.ContainerInfo, error) {
 	containers := m.getAllNamespacedContainers(DockerNamespace)
+	return m.containersInfo(containers, query)
+}
+
+func (m *manager) AllContainerdContainers(query *info.ContainerInfoRequest) (map[string]info.ContainerInfo, error) {
+	containers := m.getAllNamespacedContainers("containerd")
+	return m.containersInfo(containers, query)
+}
+
+func (m *manager) AllCrioContainers(query *info.ContainerInfoRequest) (map[string]info.ContainerInfo, error) {
+	containers := m.getAllNamespacedContainers("crio")
 	return m.containersInfo(containers, query)
 }
 
@@ -858,7 +872,7 @@ func (m *manager) GetProcessList(containerName string, options v2.RequestOptions
 		return nil, err
 	}
 	if len(conts) != 1 {
-		return nil, fmt.Errorf("Expected the request to match only one container")
+		return nil, fmt.Errorf("expected the request to match only one container")
 	}
 	// TODO(rjnagal): handle count? Only if we can do count by type (eg. top 5 cpu users)
 	ps := []v2.ProcessInfo{}
@@ -869,37 +883,6 @@ func (m *manager) GetProcessList(containerName string, options v2.RequestOptions
 		}
 	}
 	return ps, nil
-}
-
-func (m *manager) registerCollectors(collectorConfigs map[string]string, cont *containerData) error {
-	for k, v := range collectorConfigs {
-		configFile, err := cont.ReadFile(v, m.inHostNamespace)
-		if err != nil {
-			return fmt.Errorf("failed to read config file %q for config %q, container %q: %v", k, v, cont.info.Name, err)
-		}
-		klog.V(4).Infof("Got config from %q: %q", v, configFile)
-
-		if strings.HasPrefix(k, "prometheus") || strings.HasPrefix(k, "Prometheus") {
-			newCollector, err := collector.NewPrometheusCollector(k, configFile, *applicationMetricsCountLimit, cont.handler, m.collectorHTTPClient)
-			if err != nil {
-				return fmt.Errorf("failed to create collector for container %q, config %q: %v", cont.info.Name, k, err)
-			}
-			err = cont.collectorManager.RegisterCollector(newCollector)
-			if err != nil {
-				return fmt.Errorf("failed to register collector for container %q, config %q: %v", cont.info.Name, k, err)
-			}
-		} else {
-			newCollector, err := collector.NewCollector(k, configFile, *applicationMetricsCountLimit, cont.handler, m.collectorHTTPClient)
-			if err != nil {
-				return fmt.Errorf("failed to create collector for container %q, config %q: %v", cont.info.Name, k, err)
-			}
-			err = cont.collectorManager.RegisterCollector(newCollector)
-			if err != nil {
-				return fmt.Errorf("failed to register collector for container %q, config %q: %v", cont.info.Name, k, err)
-			}
-		}
-	}
-	return nil
 }
 
 // Create a container.
@@ -929,44 +912,12 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 		klog.V(4).Infof("ignoring container %q", containerName)
 		return nil
 	}
-	collectorManager, err := collector.NewCollectorManager()
+
+	// log usage of cadvisor
+	logUsage := false
+	cont, err := newContainerData(containerName, m.memoryCache, handler, logUsage, m.maxHousekeepingInterval, m.allowDynamicHousekeeping, clock.RealClock{})
 	if err != nil {
 		return err
-	}
-
-	logUsage := *logCadvisorUsage && containerName == m.cadvisorContainer
-	cont, err := newContainerData(containerName, m.memoryCache, handler, logUsage, collectorManager, m.maxHousekeepingInterval, m.allowDynamicHousekeeping, clock.RealClock{})
-	if err != nil {
-		return err
-	}
-
-	if m.includedMetrics.Has(container.PerfMetrics) {
-		perfCgroupPath, err := handler.GetCgroupPath("perf_event")
-		if err != nil {
-			klog.Warningf("Error getting perf_event cgroup path: %q", err)
-		} else {
-			cont.perfCollector, err = m.perfManager.GetCollector(perfCgroupPath)
-			if err != nil {
-				klog.Errorf("Perf event metrics will not be available for container %q: %v", containerName, err)
-			}
-		}
-	}
-
-	if m.includedMetrics.Has(container.ResctrlMetrics) {
-		cont.resctrlCollector, err = m.resctrlManager.GetCollector(containerName, func() ([]string, error) {
-			return cont.getContainerPids(m.inHostNamespace)
-		}, len(m.machineInfo.Topology))
-		if err != nil {
-			klog.V(4).Infof("resctrl metrics will not be available for container %s: %s", cont.info.Name, err)
-		}
-	}
-
-	// Add collectors
-	labels := handler.GetContainerLabels()
-	collectorConfigs := collector.GetCollectorConfigs(labels)
-	err = m.registerCollectors(collectorConfigs, cont)
-	if err != nil {
-		klog.Warningf("Failed to register collectors for %q: %v", containerName, err)
 	}
 
 	// Add the container name and all its aliases. The aliases must be within the namespace of the factory.
@@ -1273,7 +1224,7 @@ func parseEventsStoragePolicy() events.StoragePolicy {
 	policy := events.DefaultStoragePolicy()
 
 	// Parse max age.
-	parts := strings.Split(*eventStorageAgeLimit, ",")
+	parts := strings.Split(eventStorageAgeLimit, ",")
 	for _, part := range parts {
 		items := strings.Split(part, "=")
 		if len(items) != 2 {
@@ -1293,7 +1244,7 @@ func parseEventsStoragePolicy() events.StoragePolicy {
 	}
 
 	// Parse max number.
-	parts = strings.Split(*eventStorageEventLimit, ",")
+	parts = strings.Split(eventStorageEventLimit, ",")
 	for _, part := range parts {
 		items := strings.Split(part, "=")
 		if len(items) != 2 {

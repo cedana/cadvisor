@@ -15,10 +15,10 @@
 package mesos
 
 import (
-	"github.com/google/cadvisor/container"
-	"github.com/google/cadvisor/fs"
-	info "github.com/google/cadvisor/info/v1"
-	"github.com/google/cadvisor/watcher"
+	"github.com/cedana/cadvisor/container"
+	"github.com/cedana/cadvisor/fs"
+	info "github.com/cedana/cadvisor/info/v1"
+	"github.com/cedana/cadvisor/watcher"
 )
 
 // NewPlugin returns an implementation of container.Plugin suitable for passing to container.RegisterPlugin()

@@ -29,8 +29,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	info "github.com/google/cadvisor/info/v1"
-	"github.com/google/cadvisor/stats"
+	info "github.com/cedana/cadvisor/info/v1"
+	"github.com/cedana/cadvisor/stats"
 )
 
 type buffer struct {

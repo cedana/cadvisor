@@ -18,8 +18,8 @@ import (
 	"os"
 	"strings"
 
-	info "github.com/google/cadvisor/info/v1"
-	"github.com/google/cadvisor/utils/cloudinfo"
+	info "github.com/cedana/cadvisor/info/v1"
+	"github.com/cedana/cadvisor/utils/cloudinfo"
 
 	"cloud.google.com/go/compute/metadata"
 	"k8s.io/klog/v2"
